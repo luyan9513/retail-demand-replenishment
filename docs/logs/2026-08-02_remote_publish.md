@@ -76,18 +76,53 @@
 | 远端推送 | `git push -u origin main` | 未通过；缺少 HTTPS 认证 |
 | GitHub 登录 | `gh auth status` | 未通过；默认令牌无效 |
 
-## 6. 下一步与风险
+## 6. 认证恢复后的实际推送结果
 
-要完成推送，需要用户在本机安全地重新认证 GitHub。推荐操作：
+用户完成 GitHub 重新认证后，本项目再次检查认证状态，确认账号 `luyan9513` 已通过 keyring 登录 GitHub.com，拥有 `repo` 和 `workflow` 等所需范围。
 
-```bash
-gh auth login -h github.com
+### 新发现与处理
+
+首次重试仍失败，原因是原 `origin` 指向：
+
+```text
+https://ghfast.top/https://github.com/luyan9513/retail-demand-replenishment.git
 ```
 
-选择 GitHub.com、HTTPS，并在浏览器或设备码流程完成授权；不要将个人访问令牌粘贴到聊天记录、项目文件或命令历史中。认证完成后，回到项目根执行：
+这是一个代理地址，GitHub.com 的有效凭据不能用于该代理域名。该地址内嵌的目标仓库已经明确为 `github.com/luyan9513/retail-demand-replenishment.git`，因此在不改变目标仓库、不改写历史、不强制推送的前提下，将本地 `origin` 改为等价的直连地址：
+
+```bash
+git remote set-url origin https://github.com/luyan9513/retail-demand-replenishment.git
+```
+
+随后执行：
 
 ```bash
 git push -u origin main
 ```
 
-若用户希望改用直接 GitHub 地址而非当前 `ghfast.top` 代理，必须先明确授权修改 `origin`，并确认该仓库 URL 正确；本阶段没有擅自修改远端地址。
+实际结果：
+
+```text
+To https://github.com/luyan9513/retail-demand-replenishment.git
+ * [new branch]      main -> main
+branch 'main' set up to track 'origin/main'.
+```
+
+远端现已包含以下两个提交：
+
+1. `771b905 feat: add retail demand forecasting and replenishment system`
+2. `82d6e26 docs: record remote publishing status`
+
+本地 `main` 已跟踪 `origin/main`。唯一保留的本地未跟踪文件是 `dbt/.user.yml`；它是机器特定的 dbt 用户配置，仍未被提交或推送。原始 UCI 数据、DuckDB 数据库、处理 CSV 和虚拟环境也仍按 `.gitignore` 排除。
+
+## 7. 下一步与风险
+
+本次发布已完成。后续常规更新可使用：
+
+```bash
+git add <文件>
+git commit -m "<说明>"
+git push
+```
+
+仍需注意：`dbt/.user.yml` 是未跟踪的本机配置。若希望 `git status` 完全干净，可在下一次配置维护时将该文件加入 `.gitignore`；此操作不影响已完成的远端发布，也不应提交该文件本身。
