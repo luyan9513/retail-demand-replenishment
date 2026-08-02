@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: main
+    tables:
+      - name: raw_transactions
+        description: "由 src/ingest.py 导入的标准化 UCI 原始交易行。"
+        columns:
+          - name: source_row_number
+            tests: [not_null, unique]
+          - name: invoice_no
+            tests: [not_null]
+          - name: invoice_date
+            tests: [not_null]

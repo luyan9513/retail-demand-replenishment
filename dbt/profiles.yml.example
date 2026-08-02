@@ -1,0 +1,8 @@
+retail_demand:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: data/retail.duckdb
+      schema: main
+      threads: 4

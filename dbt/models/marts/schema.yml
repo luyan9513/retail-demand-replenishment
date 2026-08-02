@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: int_valid_sales_lines
+    description: "排除取消、数量/价格异常、缺 SKU、缺日期和重复后的正向销售行。"
+    columns:
+      - name: source_row_number
+        tests: [not_null, unique]
+      - name: stock_code
+        tests: [not_null]
+      - name: quantity
+        tests:
+          - not_null
+      - name: unit_price
+        tests:
+          - not_null
+  - name: mart_sku_daily_demand
+    description: "销售额前 30 个 SKU 的日级需求主题表；日历连续且零销量补齐。"
+    columns:
+      - name: stock_code
+        tests: [not_null]
+      - name: demand_date
+        tests: [not_null]
+      - name: daily_qty
+        tests: [not_null]
+      - name: demand_segment
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['稳定型', '周期型', '高价值高波动型', '间歇/长尾型']
