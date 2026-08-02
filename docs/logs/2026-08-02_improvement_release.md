@@ -59,3 +59,7 @@
 ## 剩余风险与下一步
 
 仍需在真实业务中补充订单行 ID、库存位置、在途、实际提前期分布、MOQ/箱规、成本、可售状态、促销和缺货记录。公开数据下的结果仍只能是参数化情景模拟；本阶段的改进是把这个边界表达和代码实现得更诚实、更可复核，而不是把模拟升级成了真实采购优化。下一步为最终文档一致性检查、看板人工启动检查、Git 提交并推送远端。
+
+## 交付确认
+
+最终一致性检查已完成：除历史日志（它们保留当时真实状态）外，README、当前 `docs/`、`reports/` 中没有残留旧版 WAPE、补货量、`available-inventory` 或“未来 HGB 单 SKU”的表述；`git diff --check` 无空白问题。已将本阶段 37 个受控文件提交为 Git commit `8f07400`（`feat: harden replenishment decision workflow`），并成功推送到 `origin/main`。原始 Excel、压缩包、DuckDB、处理结果和 `dbt/.user.yml` 均仍受 `.gitignore` 保护，未进入提交。
