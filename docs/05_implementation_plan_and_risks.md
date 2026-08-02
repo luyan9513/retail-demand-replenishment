@@ -30,7 +30,7 @@
 | 1. 规划 | 文档、目录、数据契约、许可边界 | 已完成 | 文档完整性检查通过 | `logs/00_initial_setup.md` |
 | 2. 实现 | Python、SQL、dbt、测试、看板 | 已完成 | Python 语法编译通过（在临时 pycache 路径） | `logs/2026-08-01_implementation_skeleton.md` |
 | 3. 环境与数据 | uv 环境、UCI 数据、DuckDB 导入 | 已完成 | Python 3.12.13、92 包、2 张表 1,067,371 行 | `logs/2026-08-01_data_run_and_validation.md` |
-| 4. 数据与模型验证 | dbt、回测、未来预测 | 已完成 | dbt 20/20、1,701 回测行、175 未来预测行 | 同上 |
+| 4. 数据与模型验证 | dbt、回测、未来预测 | 已完成 | dbt 24/24、2,268 回测行、175 未来预测行；17 pytest | 同上 |
 | 5. 决策展示 | 情景、单测、Streamlit | 已完成 | 默认 25 SKU 情景、pytest 9 passed、五页看板冒烟 | 同上 |
 | 6. 文档深化 | 日志、报告、追溯、阅读路线 | 已完成 | Markdown 结构/链接/事实一致性检查 | `logs/2026-08-01_documentation_deepening.md` |
 
@@ -40,9 +40,9 @@
 |---|---|---|---|---|
 | R1 | uv 默认缓存不可写 | 只对命令设置 `UV_CACHE_DIR=/private/tmp/...` | `.venv` 创建成功 | 换机器仍须确认缓存权限 |
 | R2 | DuckDB 1.5.5 与 Python 3.9 不兼容 | 使用本机已有 Python 3.12.13 | 92 包安装完成 | 未来升级依赖时需重做解析验证 |
-| R3 | dbt profile 相对路径错误 | 改为项目内 `data/retail.duckdb` | `dbt debug` 成功、20/20 | 新使用者应从示例复制并在项目根运行 |
+| R3 | dbt profile 相对路径错误 | 改为项目内 `data/retail.duckdb` | `dbt debug` 成功、24/24 | 新使用者应从示例复制并在项目根运行 |
 | R4 | HGB 逐 SKU 重训过慢 | 同窗口共享训练 + SKU one-hot | 管道约 3 秒完成 | 共享模型与单 SKU 模型的精度差异仍可进一步研究 |
 | R5 | 部分候选 SKU 不完整覆盖 3 窗口 | 正式选模门槛设为 21 观测 | 25 个 SKU 进入正式产物 | 少数 SKU 的近期情况仅被监控，不提供强结论 |
 | R6 | 公开交易数据缺库存、在途、提前期和成本 | 参数化情景、全链路限制文案 | 情景 CSV/看板/报告均标明假设 | 无法证明真实缺货、库存或利润效果 |
 | R7 | 复杂模型 sMAPE 不占优、稳定型存在低估 | 保留基线/所有指标/分层偏差 | HGB sMAPE 0.9991；稳定型偏差 -0.1263 | 必须业务复核，不宜仅按模型名做策略 |
-| R8 | HGB 回测使用共享训练，未来 HGB 使用单 SKU 训练 | 已在模型卡、代码导读和报告中显式披露，未用文档掩盖差异 | 调用链复核：`run_backtest()`→`global_machine_learning_forecasts()`；`create_future_forecast()`→`machine_learning_forecast()` | 需统一实现后重新生成全部 HGB 相关结果；当前未来 HGB 情景只适合作品集演示/人工复核 |
+| R8 | HGB 回测和未来预测曾使用不同训练路径 | 2026-08-02 未来预测已复用共享 HGB；短历史 SKU 明确回退移动平均 | 17 项 pytest、真实管道 175 条未来预测成功；`test_train.py` 断言调用共享路径 | 仍非生产级模型注册/版本治理，需上线前补充模型工件和监控 |

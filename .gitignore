@@ -11,4 +11,5 @@ data/processed/*
 dbt/target/
 dbt/logs/
 dbt/profiles.yml
+dbt/.user.yml
 *.log

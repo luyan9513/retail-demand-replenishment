@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import argparse
+from datetime import timedelta
 from pathlib import Path
 
 import duckdb
 import numpy as np
 import pandas as pd
 
-from src.backtest import BacktestConfig, machine_learning_forecast, metric_summary, moving_average, run_backtest, seasonal_naive
+from src.backtest import BacktestConfig, croston_sba, global_machine_learning_forecasts, metric_summary, moving_average, run_backtest, seasonal_naive
 
 
 def _future_prediction(model_name: str, history: list[float], first_date: pd.Timestamp, horizon_days: int) -> list[float]:
@@ -16,8 +17,10 @@ def _future_prediction(model_name: str, history: list[float], first_date: pd.Tim
         return seasonal_naive(history, horizon_days)
     if model_name == "moving_average":
         return moving_average(history, horizon_days)
+    if model_name == "croston_sba":
+        return croston_sba(history, horizon_days)
     if model_name == "hist_gradient_boosting":
-        return machine_learning_forecast(history, first_date, horizon_days)
+        raise ValueError("未来 HGB 预测必须由共享全局 HGB 路径生成")
     raise ValueError(f"未知模型：{model_name}")
 
 
@@ -26,6 +29,7 @@ def select_models(metrics: pd.DataFrame, min_observations: int = 21) -> pd.DataF
     if metrics.empty:
         return pd.DataFrame(columns=["stock_code", "selected_model", "selected_wape", "selected_mae", "selected_bias"])
     ranking = metrics[metrics["observations"] >= min_observations].copy()
+    ranking = ranking[(ranking["demand_segment"] == "间歇/长尾型") | (ranking["model_name"] != "croston_sba")]
     if ranking.empty:
         return pd.DataFrame(columns=["stock_code", "selected_model", "selected_wape", "selected_mae", "selected_bias"])
     ranking["wape_sort"] = ranking["wape"].fillna(np.inf)
@@ -40,7 +44,14 @@ def select_models(metrics: pd.DataFrame, min_observations: int = 21) -> pd.DataF
 def create_future_forecast(daily: pd.DataFrame, selected: pd.DataFrame, backtest_predictions: pd.DataFrame, horizon_days: int = 7) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     selected_map = selected.set_index("stock_code").to_dict("index") if not selected.empty else {}
-    for stock_code, group in daily.sort_values("demand_date").groupby("stock_code"):
+    grouped_daily = {str(stock_code): group.sort_values("demand_date") for stock_code, group in daily.groupby("stock_code")}
+    hgb_selected = {stock_code for stock_code, item in selected_map.items() if item["selected_model"] == "hist_gradient_boosting"}
+    global_hgb_predictions: dict[str, list[float]] = {}
+    if hgb_selected:
+        histories = {stock_code: group["daily_qty"].astype(float).tolist() for stock_code, group in grouped_daily.items()}
+        first_dates = {stock_code: pd.Timestamp(group["demand_date"].iloc[0]) for stock_code, group in grouped_daily.items()}
+        global_hgb_predictions = global_machine_learning_forecasts(histories, first_dates, horizon_days)
+    for stock_code, group in grouped_daily.items():
         if stock_code not in selected_map:
             continue
         group = group.sort_values("demand_date")
@@ -48,13 +59,13 @@ def create_future_forecast(daily: pd.DataFrame, selected: pd.DataFrame, backtest
         first_date = pd.Timestamp(group["demand_date"].iloc[0])
         last_date = pd.Timestamp(group["demand_date"].iloc[-1])
         model_name = str(selected_map[stock_code]["selected_model"])
-        values = _future_prediction(model_name, history, first_date, horizon_days)
+        values = global_hgb_predictions[stock_code] if model_name == "hist_gradient_boosting" else _future_prediction(model_name, history, first_date, horizon_days)
         residuals = backtest_predictions.loc[
             (backtest_predictions["stock_code"] == stock_code) & (backtest_predictions["model_name"] == model_name), "residual"
         ]
         residual_sigma = float(residuals.std(ddof=0)) if len(residuals) >= 2 else float(group["daily_qty"].std(ddof=0))
         for step, predicted in enumerate(values, start=1):
-            rows.append({"stock_code": stock_code, "forecast_origin": last_date, "forecast_date": last_date + pd.Timedelta(days=step),
+            rows.append({"stock_code": stock_code, "forecast_origin": last_date, "forecast_date": last_date + timedelta(days=int(step)),
                          "horizon_day": step, "model_name": model_name, "predicted_qty": max(0.0, float(predicted)),
                          "residual_sigma": max(0.0, residual_sigma), "demand_segment": group["demand_segment"].iloc[0]})
     return pd.DataFrame(rows)

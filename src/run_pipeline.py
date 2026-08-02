@@ -22,12 +22,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="导出审计并执行预测训练；导入与 dbt run 需先分别完成")
     parser.add_argument("--database", type=Path, default=Path("data/retail.duckdb"))
     parser.add_argument("--quality-sql", type=Path, default=Path("sql/01_quality_checks.sql"))
+    parser.add_argument("--duplicate-sensitivity-sql", type=Path, default=Path("sql/03_duplicate_sensitivity.sql"))
     parser.add_argument("--output-dir", type=Path, default=Path("data/processed"))
     parser.add_argument("--top-skus", type=int, default=30, choices=range(20, 51))
     args = parser.parse_args()
     audit_count = export_quality_audit(args.database, args.quality_sql, args.output_dir / "quality_audit.csv")
+    duplicate_sensitivity_count = export_quality_audit(
+        args.database, args.duplicate_sensitivity_sql, args.output_dir / "duplicate_sensitivity.csv"
+    )
     result = run_training(args.database, args.output_dir, args.top_skus)
-    print(f"质量审计指标={audit_count}; " + ", ".join(f"{key}={value}" for key, value in result.items()))
+    print(
+        f"质量审计指标={audit_count}; 候选重复敏感性指标={duplicate_sensitivity_count}; "
+        + ", ".join(f"{key}={value}" for key, value in result.items())
+    )
 
 
 if __name__ == "__main__":

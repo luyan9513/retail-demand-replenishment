@@ -11,7 +11,7 @@
 | `sql/01_quality_checks.sql` | 可独立执行的质量审计 | raw 表 | 11 项审计指标 | 每个计数的口径；候选重复的措辞 |
 | `src/features.py` | 特征与分层规则 | SKU×日表 | 滞后/滚动特征、分层统计 | `shift(1)` 防止泄漏；分层优先级 |
 | `src/metrics.py` | 误差指标 | 实际值、预测值 | WAPE/MAE/sMAPE/偏差 | 零需求/零分母边界 |
-| `src/backtest.py` | 时间回测与候选预测器 | 日级需求 | 逐日回测预测、汇总指标 | 训练/测试日期边界、三个模型、HGB 共享训练 |
+| `src/backtest.py` | 时间回测与候选预测器 | 日级需求 | 逐日回测预测、汇总指标 | 训练/测试日期边界、四个模型、HGB 共享训练与短历史回退 |
 | `src/train.py` | 训练编排、选模、未来预测导出 | mart 表、回测预测 | 8 类 CSV 与 forecast mart | Top 30、21 观测门槛、选模排序、残差标准差 |
 | `src/replenishment.py` | 纯公式与敏感性函数 | 预测、σ、参数 | SS/ROP/Q/成本代理 | 参数校验、L>7 外推、向上取整 |
 | `src/scenarios.py` | 批量默认情景 | 未来预测 CSV | 情景 CSV + DuckDB 表 | 只接受显式假设，保留 σ/库存来源说明 |
@@ -147,29 +147,21 @@ src.ingest
 
 这里的残差定义是 `actual_qty - predicted_qty`。后续残差标准差越大，安全库存越大；它不是“库存误差”。
 
-### 7.2 三个预测器
+### 7.2 四个预测器
 
 | 函数 | 做法 | 细节 | 优点/局限 |
 |---|---|---|---|
 | `seasonal_naive` | 取 7 天前对应位置 | 若历史不足 7 天退回最后一个值；预测裁剪到不小于 0 | 极其可解释；不能学习趋势或复杂波动 |
 | `moving_average` | 最近 7 天均值，复制到预测期 | 预测 7 天内不递归更新 | 平滑；对突发变化反应慢 |
-| `machine_learning_forecast` | 单 SKU HGB + 递归预测 | 特征为 lag/rolling/day/month；训练样本从第 14 天起 | 可学习非线性；对单 SKU 历史量和递归误差敏感 |
-| `global_machine_learning_forecasts` | 每个回测窗口共享一次 HGB | 合并 SKU 特征，one-hot 编码 SKU，再逐 SKU 递归 | 本地更快、可借跨 SKU 信号；模型形式不同于单 SKU HGB |
+| `croston_sba` | 非零需求大小与间隔的指数平滑 + SBA 修正 | 输出恒定的非负期望日需求 | 适合间歇基线；只在间歇/长尾层参与选模 |
+| `machine_learning_forecast` | 单 SKU HGB + 递归预测 | 保留为局部工具；当前正式回测/未来生成不使用它 | 可学习非线性；不应与正式共享 HGB 结果混为一谈 |
+| `global_machine_learning_forecasts` | 每个回测窗口及未来生成共享一次 HGB | 合并 SKU 特征，one-hot 编码 SKU，再逐 SKU 递归；少于 14 天历史时回退移动平均 | 本地更快、可借跨 SKU 信号；回测与未来模型形式一致 |
 
 `_make_hgb()` 将 `max_iter=40`、`max_leaf_nodes=7`、`min_samples_leaf=20` 等复杂度限制写死在代码中。这是为了让作品集在本机可复现，而不是追求无限调参后的最高离线分数；`random_state=42` 使随机过程可复现。
 
-### 7.3 一个必须理解的实现一致性风险
+### 7.3 已修复的实现一致性风险
 
-**回测**中，`run_backtest()` 调用 `global_machine_learning_forecasts()`，即“每窗口共享 HGB + SKU one-hot”。
-
-**未来预测**中，`src/train.py` 的 `_future_prediction()` 对模型名 `hist_gradient_boosting` 调用的是 `machine_learning_forecast()`，即“每个 SKU 单独训练 HGB”。
-
-这意味着被命名为 HGB 的未来预测，训练形式与其用于选模的共享 HGB 回测版本并不完全相同。它不影响已生成的回测指标本身，但会降低“未来预测与回测模型完全同构”的严格性。因此：
-
-- 当前未来 HGB 预测可用于项目演示和参数化情景；
-- 不能把它描述成“完全由同一个已回测 HGB 工件产出”；
-- 若做生产化或下一轮技术迭代，应让未来预测复用与回测一致的全局 HGB 训练逻辑，或让回测改为单 SKU HGB，然后重新生成指标和情景；
-- 本文档将该项列为**已识别但本次纯文档阶段未修改的技术风险**，避免用文档掩盖实现差异。
+**回测**和**未来预测**现在都调用 `global_machine_learning_forecasts()`：共享训练样本、SKU one-hot、受限 HGB 参数和递归预测完全一致。`_future_prediction()` 遇到 `hist_gradient_boosting` 会直接报错，防止以后有人意外绕回单 SKU 路径。共享模型中历史不足 14 天的 SKU 无法构造 lag-14，因此明确回退移动平均，而不是静默报错或虚构 HGB 特征。`tests/test_train.py` 断言未来 HGB 的调用路径，`tests/test_backtest.py` 覆盖长短历史混合场景；真实 30 SKU 链路也已成功运行。
 
 ### 7.4 `metric_summary(predictions, group_columns)`
 
@@ -256,7 +248,7 @@ src.ingest
 
 | 优先级 | 发现 | 为什么重要 | 建议改动与验证 |
 |---|---|---|---|
-| 高 | HGB 回测是共享模型，未来预测是单 SKU HGB | 选模和实际未来预测的模型形式不完全同构 | 统一两端：复用 global HGB 的训练/递归预测接口，或把回测改为单 SKU HGB；重跑全套回测、情景和报告 |
+| 已处理 | HGB 回测曾是共享模型、未来预测曾是单 SKU HGB | 2026-08-02 已统一为共享训练路径 | `create_future_forecast()` 调用 `global_machine_learning_forecasts()`；已重跑全套回测、情景和报告 |
 | 中 | `--sheet` 帮助文字与默认读所有 sheet 的实现不一致 | 新维护者可能误以为只导入第一张表 | 修改 help 文案，补导入单元测试 |
 | 中 | 候选重复缺少订单行唯一键 | 可能过度/不足去重 | 接入原始订单行 ID 或让该规则变成可配置审计，不直接剔除 |
 | 中 | 预测误差未做概率校准 | SS 用正态近似，服务水平不等于真实达成率 | 加分位数/共形预测或服务水平回测 |

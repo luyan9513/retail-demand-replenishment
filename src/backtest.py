@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Callable, Iterable
 
 import numpy as np
@@ -48,10 +49,33 @@ def moving_average(history: list[float], horizon_days: int, window: int = 7) -> 
     return [max(0.0, float(np.mean(history[-window:]))) for _ in range(horizon_days)]
 
 
+def croston_sba(history: list[float], horizon_days: int, alpha: float = 0.10) -> list[float]:
+    """Croston-SBA 间歇需求基线；输出非负、恒定的期望日需求。"""
+    if not history:
+        raise ValueError("Croston-SBA 至少需要一天历史")
+    if not 0 < alpha <= 1:
+        raise ValueError("Croston-SBA 的 alpha 必须在 (0, 1] 内")
+    values = np.maximum(np.asarray(history, dtype=float), 0.0)
+    nonzero_positions = np.flatnonzero(values > 0)
+    if nonzero_positions.size == 0:
+        return [0.0] * horizon_days
+    first_position = int(nonzero_positions[0])
+    demand_size = float(values[first_position])
+    interval = float(first_position + 1)
+    previous_nonzero = first_position
+    for position in nonzero_positions[1:]:
+        position = int(position)
+        demand_size += alpha * (float(values[position]) - demand_size)
+        interval += alpha * (float(position - previous_nonzero) - interval)
+        previous_nonzero = position
+    corrected_rate = max(0.0, (1 - alpha / 2) * demand_size / max(interval, 1.0))
+    return [corrected_rate] * horizon_days
+
+
 def _training_matrix(history: list[float], first_date: pd.Timestamp) -> tuple[pd.DataFrame, np.ndarray]:
     rows, targets = [], []
     for index in range(14, len(history)):
-        rows.append(feature_row(history[:index], first_date + pd.Timedelta(days=index)))
+        rows.append(feature_row(history[:index], first_date + timedelta(days=int(index))))
         targets.append(history[index])
     return pd.DataFrame(rows, columns=FEATURE_COLUMNS), np.asarray(targets, dtype=float)
 
@@ -79,7 +103,7 @@ def machine_learning_forecast(history: list[float], first_date: pd.Timestamp, ho
     recursive_history = history.copy()
     forecast: list[float] = []
     for step in range(horizon_days):
-        date = first_date + pd.Timedelta(days=len(history) + step)
+        date = first_date + timedelta(days=int(len(history) + step))
         predicted = float(model.predict(pd.DataFrame([feature_row(recursive_history, date)], columns=FEATURE_COLUMNS))[0])
         predicted = max(0.0, predicted)
         forecast.append(predicted)
@@ -108,10 +132,15 @@ def global_machine_learning_forecasts(
     model.fit(encoded_training, np.concatenate(targets))
     forecasts: dict[str, list[float]] = {}
     for stock_code, history in histories.items():
+        # 共享模型可由其他 SKU 的样本训练，但本 SKU 少于 14 天时无法构造滞后特征；
+        # 此时使用确定性的移动平均回退，避免把短历史数据伪装成机器学习预测。
+        if len(history) < 14:
+            forecasts[stock_code] = moving_average(history, horizon_days)
+            continue
         recursive_history = history.copy()
         values: list[float] = []
         for step in range(horizon_days):
-            date = first_dates[stock_code] + pd.Timedelta(days=len(history) + step)
+            date = first_dates[stock_code] + timedelta(days=int(len(history) + step))
             row = pd.DataFrame([feature_row(recursive_history, date)])
             row["sku_id"] = stock_code
             encoded_row = pd.get_dummies(row, columns=["sku_id"], dtype=float).reindex(columns=encoded_training.columns, fill_value=0.0)
@@ -127,12 +156,14 @@ def _predict(model_name: str, history: list[float], first_date: pd.Timestamp, co
         return seasonal_naive(history, config.horizon_days)
     if model_name == "moving_average":
         return moving_average(history, config.horizon_days, config.moving_average_days)
+    if model_name == "croston_sba":
+        return croston_sba(history, config.horizon_days)
     if model_name == "hist_gradient_boosting":
         return machine_learning_forecast(history, first_date, config.horizon_days)
     raise ValueError(f"未知模型：{model_name}")
 
 
-def run_backtest(daily: pd.DataFrame, config: BacktestConfig | None = None, models: tuple[str, ...] = ("seasonal_naive", "moving_average", "hist_gradient_boosting")) -> pd.DataFrame:
+def run_backtest(daily: pd.DataFrame, config: BacktestConfig | None = None, models: tuple[str, ...] = ("seasonal_naive", "moving_average", "croston_sba", "hist_gradient_boosting")) -> pd.DataFrame:
     config = config or BacktestConfig()
     required = {"stock_code", "demand_date", "daily_qty"}
     missing = required - set(daily.columns)
@@ -150,7 +181,7 @@ def run_backtest(daily: pd.DataFrame, config: BacktestConfig | None = None, mode
         for stock_code, group in prepared_groups.items():
             dates = pd.to_datetime(group["demand_date"])
             train = group.loc[dates <= origin]
-            test = group.loc[(dates > origin) & (dates <= origin + pd.Timedelta(days=config.horizon_days))]
+            test = group.loc[(dates > origin) & (dates <= origin + timedelta(days=int(config.horizon_days)))]
             if len(train) < config.min_train_days or len(test) != config.horizon_days:
                 continue
             first_date = pd.Timestamp(dates.iloc[0])

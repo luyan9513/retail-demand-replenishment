@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: int_valid_sales_lines
-    description: "排除取消、数量/价格异常、缺 SKU、缺日期和重复后的正向销售行。"
+    description: "默认正向销售行：排除取消、数量/价格异常、缺 SKU 和缺日期；候选重复不自动删除。"
     columns:
       - name: source_row_number
         tests: [not_null, unique]
@@ -14,6 +14,11 @@ models:
       - name: unit_price
         tests:
           - not_null
+  - name: int_valid_sales_lines_deduped
+    description: "严格候选去重的正向销售对照行，仅用于敏感性分析。"
+    columns:
+      - name: source_row_number
+        tests: [not_null, unique]
   - name: mart_sku_daily_demand
     description: "销售额前 30 个 SKU 的日级需求主题表；日历连续且零销量补齐。"
     columns:

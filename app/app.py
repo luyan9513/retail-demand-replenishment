@@ -21,6 +21,10 @@ DISPLAY_NAMES = {
     "wape": "WAPE", "smape": "sMAPE", "forecast_bias": "预测偏差", "observations": "回测观测数",
     "window_number": "回测窗口", "lead_time_days": "提前期（天）", "service_level": "服务水平",
     "recommended_order_qty": "建议补货量", "reorder_point": "补货点", "safety_stock": "安全库存",
+    "inventory_position": "库存位置", "on_hand_inventory": "现货库存", "inbound_inventory": "在途库存",
+    "reserved_inventory": "已预留库存", "backorder_qty": "已欠交数量", "min_order_qty": "最小订货量",
+    "pack_size": "包装倍数", "lead_time_std_days": "提前期标准差（天）",
+    "unconstrained_order_qty": "理论缺口（未约束）",
     "backtest_coverage": "回测覆盖",
     "total_recommended_order_qty": "建议补货总量", "high_risk_sku_count": "高风险 SKU 数",
     "total_holding_cost_proxy": "持有成本代理合计", "total_stockout_cost_proxy": "缺货成本代理合计",
@@ -58,6 +62,11 @@ def display_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.rename(columns=DISPLAY_NAMES)
 
 
+@st.cache_data(show_spinner=False)
+def to_csv_bytes(frame: pd.DataFrame) -> bytes:
+    return frame.to_csv(index=False).encode("utf-8-sig")
+
+
 def empty_state() -> None:
     st.info("尚未发现运行产物。请先完成数据导入、dbt 模型、训练与情景生成；看板不会用虚构数据替代真实结果。")
     st.code("python -m src.ingest --input data/raw/online_retail_II.xlsx\n"
@@ -73,6 +82,7 @@ def main() -> None:
     model_metrics = load_csv("model_metrics.csv")
     backtest = load_csv("backtest_predictions.csv", ("forecast_date", "forecast_origin"))
     quality = load_csv("quality_audit.csv")
+    duplicate_sensitivity = load_csv("duplicate_sensitivity.csv")
 
     st.title("零售需求预测与补货决策系统")
     st.caption("面向 SKU 级销售计划的时序预测与库存模拟")
@@ -88,16 +98,25 @@ def main() -> None:
         lead_time = st.slider("提前期（天）", min_value=1, max_value=28, value=7)
         service_level_pct = st.slider("服务水平（%）", min_value=50.0, max_value=99.9, value=95.0, step=0.5)
         service_level = service_level_pct / 100
-        available_inventory = st.number_input("假设可用库存（件）", min_value=0.0, value=0.0, step=1.0)
+        on_hand_inventory = st.number_input("假设现货库存（件）", min_value=0.0, value=0.0, step=1.0)
+        inbound_inventory = st.number_input("假设在途库存（件）", min_value=0.0, value=0.0, step=1.0)
+        reserved_inventory = st.number_input("假设已预留库存（件）", min_value=0.0, value=0.0, step=1.0)
+        backorder_qty = st.number_input("假设已欠交数量（件）", min_value=0.0, value=0.0, step=1.0)
+        min_order_qty = st.number_input("最小订货量 MOQ（件）", min_value=0.0, value=0.0, step=1.0)
+        pack_size = st.number_input("包装倍数（件）", min_value=1.0, value=1.0, step=1.0)
+        lead_time_std_days = st.number_input("提前期标准差（天）", min_value=0.0, value=0.0, step=0.5)
         holding_cost = st.number_input("单位持有成本（假设）", min_value=0.0, value=0.0, step=0.1)
         stockout_cost = st.number_input("单位缺货成本（假设）", min_value=0.0, value=0.0, step=0.1)
-        st.caption("参数只用于模拟；数据源不包含真实库存、在途、MOQ 或采购成本。")
+        st.caption("参数只用于模拟；数据源不包含真实库存、在途、MOQ、箱规或采购成本。")
 
     sku_future = future[future["stock_code"].astype(str) == selected_sku].sort_values("forecast_date")
     sku_daily = daily[daily["stock_code"].astype(str) == selected_sku].sort_values("demand_date")
     residual_sigma = float(sku_future["residual_sigma"].iloc[0])
-    simulation = simulate_replenishment(sku_future["predicted_qty"], residual_sigma, lead_time, service_level,
-                                        available_inventory, holding_cost, stockout_cost)
+    simulation = simulate_replenishment(
+        sku_future["predicted_qty"], residual_sigma, lead_time, service_level, on_hand_inventory,
+        inbound_inventory, reserved_inventory, backorder_qty, min_order_qty, pack_size, lead_time_std_days,
+        holding_cost, stockout_cost,
+    )
 
     tabs = st.tabs(["SKU 总览", "预测评估", "SKU 预测", "补货模拟", "例外清单"])
     with tabs[0]:
@@ -114,6 +133,10 @@ def main() -> None:
         st.subheader("Top SKU 与需求波动")
         st.dataframe(display_frame(overview), width="stretch", hide_index=True)
         st.caption("数据质量完整指标见 `data/processed/quality_audit.csv`；取消单、异常行与重复行不会混入正向销量。")
+        if not duplicate_sensitivity.empty:
+            st.subheader("候选重复处理敏感性")
+            st.dataframe(display_frame(duplicate_sensitivity), width="stretch", hide_index=True)
+            st.caption("默认口径保留候选重复；严格去重仅作为对照。没有订单行唯一键前，不能把候选重复直接当作系统错误。")
 
     with tabs[1]:
         st.subheader("滚动时间回测：模型对比")
@@ -142,18 +165,23 @@ def main() -> None:
         figure.update_layout(xaxis_title="日期", yaxis_title="件数", legend_title="序列")
         st.plotly_chart(figure, width="stretch")
         st.caption("不确定性带基于滚动回测残差标准差的正态近似；不是经校准的概率区间。")
+        st.download_button("下载该 SKU 的未来预测 CSV", to_csv_bytes(sku_future), f"forecast_{selected_sku}.csv", "text/csv", icon=":material/download:")
 
     with tabs[3]:
         st.subheader(f"SKU {selected_sku}：补货情景")
-        metrics = st.columns(4)
+        metrics = st.columns(5)
         metrics[0].metric("未来7天预测需求", fmt(sku_future["predicted_qty"].sum(), 0))
         metrics[1].metric("安全库存", fmt(simulation["safety_stock"], 0))
         metrics[2].metric("补货点", fmt(simulation["reorder_point"], 0))
-        metrics[3].metric("建议补货量", fmt(simulation["recommended_order_qty"], 0))
-        st.caption("补货点 = 提前期内预测需求 + 安全库存；建议补货量 = max(0, 补货点 − 假设可用库存)。")
-        sensitivity = pd.DataFrame(sensitivity_analysis(sku_future["predicted_qty"], residual_sigma, available_inventory,
-                                                        [max(1, lead_time - 3), lead_time, lead_time + 3],
-                                                        [0.90, service_level, 0.99], [holding_cost], [stockout_cost]))
+        metrics[3].metric("库存位置", fmt(simulation["inventory_position"], 0))
+        metrics[4].metric("建议补货量", fmt(simulation["recommended_order_qty"], 0))
+        st.caption("库存位置 = 现货 + 在途 − 已预留 − 已欠交；补货点 = 提前期内预测需求 + 安全库存；建议量再应用 MOQ 与包装倍数。")
+        sensitivity = pd.DataFrame(sensitivity_analysis(
+            sku_future["predicted_qty"], residual_sigma, on_hand_inventory,
+            [max(1, lead_time - 3), lead_time, lead_time + 3], [0.90, service_level, 0.99],
+            [holding_cost], [stockout_cost], inbound_inventory, reserved_inventory, backorder_qty,
+            min_order_qty, pack_size, lead_time_std_days,
+        ))
         sensitivity_chart = px.line(sensitivity, x="lead_time_days", y="recommended_order_qty", color="service_level", markers=True,
                                     labels={"lead_time_days": "提前期（天）", "recommended_order_qty": "建议补货量", "service_level": "服务水平"})
         st.plotly_chart(sensitivity_chart, width="stretch")
@@ -164,14 +192,16 @@ def main() -> None:
             for stock_code, group in future.groupby("stock_code")
         }
         portfolio = pd.DataFrame(portfolio_sensitivity(
-            portfolio_inputs, available_inventory, [max(1, lead_time - 3), lead_time, lead_time + 3],
-            [0.90, service_level, 0.99], holding_cost, stockout_cost,
+            portfolio_inputs, on_hand_inventory, [max(1, lead_time - 3), lead_time, lead_time + 3],
+            [0.90, service_level, 0.99], holding_cost, stockout_cost, inbound_inventory, reserved_inventory,
+            backorder_qty, min_order_qty, pack_size, lead_time_std_days,
         ))
         portfolio_chart = px.line(portfolio, x="lead_time_days", y="high_risk_sku_count", color="service_level", markers=True,
                                   labels={"lead_time_days": "提前期（天）", "high_risk_sku_count": "高风险 SKU 数", "service_level": "服务水平"})
         st.plotly_chart(portfolio_chart, width="stretch")
         st.dataframe(display_frame(portfolio), width="stretch", hide_index=True)
-        st.caption("高风险 SKU 指在当前统一库存假设下建议补货量大于 0 的 SKU。成本参数只改变成本代理；本版没有把成本自动转化为服务水平或订货策略。")
+        st.caption("高风险 SKU 指在当前统一库存位置假设下理论缺口大于 0 的 SKU。成本参数只改变成本代理；本版没有把成本自动转化为服务水平或订货策略。")
+        st.download_button("下载当前 SKU 情景 CSV", to_csv_bytes(pd.DataFrame([simulation])), f"scenario_{selected_sku}.csv", "text/csv", icon=":material/download:")
 
     with tabs[4]:
         st.subheader("优先复核：高不确定性或系统性低估的 SKU")
